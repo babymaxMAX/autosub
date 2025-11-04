@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+# Install system dependencies including ffmpeg
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libmagic1 \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies with increased timeout and retries
+RUN pip install --no-cache-dir --timeout=300 --retries=5 -r requirements.txt
+
+# Copy application code
+COPY config/ ./config/
+COPY worker/ ./worker/
+COPY db/ ./db/
+
+# Create storage directory
+RUN mkdir -p /app/storage /app/logs
+
+# Run worker
+CMD ["python", "-m", "worker.main"]
+

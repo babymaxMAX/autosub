@@ -51,6 +51,7 @@ def process_video_task(task_id: int):
         )
         
         # Step 2: Transcribe audio
+        detected_language = None
         if task.generate_subtitles:
             logger.info(f"Task #{task_id}: Transcribing audio")
             subtitles_path = transcribe_audio(
@@ -58,6 +59,9 @@ def process_video_task(task_id: int):
                 work_dir,
                 language=task.source_language
             )
+            # Get detected language from transcription result
+            # Note: transcriber returns detected language in logs, we'll pass source_language
+            detected_language = task.source_language
         else:
             subtitles_path = None
         
@@ -67,7 +71,8 @@ def process_video_task(task_id: int):
             subtitles_path = translate_subtitles(
                 subtitles_path,
                 work_dir,
-                target_language=task.target_language
+                target_language=task.target_language,
+                source_language=detected_language
             )
         
         # Step 4: Generate voiceover

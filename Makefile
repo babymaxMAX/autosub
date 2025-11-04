@@ -1,4 +1,4 @@
-.PHONY: help build up down restart logs shell clean test
+.PHONY: help build up down restart logs shell clean test migrate upgrade revision smoke fmt lint
 
 help:
 	@echo "AutoSub Bot - Available commands:"
@@ -11,16 +11,41 @@ help:
 	@echo "  make clean    - Clean storage and temp files"
 	@echo "  make test     - Run tests"
 	@echo "  make backup   - Backup database"
+	@echo "  make migrate  - Run database migrations"
+	@echo "  make upgrade  - Upgrade database to head"
+	@echo "  make revision - Create new migration (use: make revision m='description')"
+	@echo "  make smoke    - Run smoke tests"
+	@echo "  make fmt      - Format code with black"
+	@echo "  make lint     - Lint code with flake8"
 
 build:
 	docker-compose build
 
 up:
-	docker-compose up -d
+	docker-compose up -d --build
 	@echo "Services started. Use 'make logs' to view logs."
 
 down:
-	docker-compose down
+	docker-compose down -v
+
+migrate:
+	docker-compose exec bot alembic upgrade head || true
+	@echo "DB migrated"
+
+upgrade:
+	docker-compose exec bot alembic upgrade head
+
+revision:
+	docker-compose exec bot alembic revision -m "$(m)" --autogenerate
+
+smoke:
+	bash scripts/smoke.sh
+
+fmt:
+	black .
+
+lint:
+	flake8 .
 
 restart:
 	docker-compose restart

@@ -2,8 +2,18 @@
 import logging
 import re
 from pathlib import Path
+from typing import Optional
 import argostranslate.package
 import argostranslate.translate
+try:
+    from langdetect import detect, DetectorFactory
+    # Set seed for consistent results
+    DetectorFactory.seed = 0
+    LANGDETECT_AVAILABLE = True
+except ImportError:
+    LANGDETECT_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("langdetect not available, using fallback language detection")
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +59,45 @@ def translate_text(text: str, from_lang: str, to_lang: str) -> str:
         return text
 
 
-def translate_subtitles(srt_path: str, output_dir: Path, target_language: str = "en") -> str:
+def detect_language(text: str) -> str:
+    """Detect language from text."""
+    if not LANGDETECT_AVAILABLE:
+        # Fallback: simple heuristic
+        return "en"
+    
+    try:
+        # Combine first few subtitles for better detection
+        detected = detect(text)
+        logger.info(f"Detected language: {detected}")
+        return detected
+    except Exception as e:
+        logger.warning(f"Language detection failed: {e}, using 'en' as fallback")
+        return "en"
+
+
+def _normalize_lang_code(lang: str) -> str:
+    """Normalize language code for Argos Translate."""
+    # Map common codes to Argos Translate codes
+    lang_map = {
+        "en": "en",
+        "ru": "ru",
+        "es": "es",
+        "fr": "fr",
+        "de": "de",
+        "it": "it",
+        "pt": "pt",
+        "pl": "pl",
+        "tr": "tr",
+        "uk": "uk",
+        "zh": "zh",
+        "ja": "ja",
+        "ko": "ko",
+    }
+    lang_lower = lang.lower()[:2]
+    return lang_map.get(lang_lower, "en")
+
+
+def translate_subtitles(srt_path: str, output_dir: Path, target_language: str = "en", source_language: Optional[str] = None) -> str:
     """Translate SRT subtitles."""
     try:
         # Read SRT file
@@ -59,18 +107,38 @@ def translate_subtitles(srt_path: str, output_dir: Path, target_language: str = 
         # Parse SRT
         subtitles = parse_srt(content)
         
-        # Detect source language (assuming first subtitle)
-        if subtitles:
-            # Simple language detection - you may want to use a proper library
-            source_language = "auto"  # For now, we'll use English as source
-            
-            # Translate each subtitle
-            for subtitle in subtitles:
+        if not subtitles:
+            logger.warning("No subtitles found in file")
+            return srt_path
+        
+        # Detect source language if not provided
+        if source_language is None or source_language == "auto":
+            # Combine text from first few subtitles for detection
+            sample_text = " ".join([s["text"] for s in subtitles[:5]])
+            detected_lang = detect_language(sample_text)
+            source_language = _normalize_lang_code(detected_lang)
+            logger.info(f"Detected source language: {detected_lang} (normalized: {source_language})")
+        
+        # Normalize target language
+        target_language = _normalize_lang_code(target_language)
+        
+        # If source and target are the same, return original
+        if source_language == target_language:
+            logger.info("Source and target languages are the same, skipping translation")
+            return srt_path
+        
+        # Translate each subtitle
+        logger.info(f"Translating from {source_language} to {target_language}")
+        for i, subtitle in enumerate(subtitles):
+            try:
                 subtitle["text"] = translate_text(
                     subtitle["text"],
-                    from_lang="en",  # You should detect this properly
+                    from_lang=source_language,
                     to_lang=target_language
                 )
+            except Exception as e:
+                logger.warning(f"Failed to translate subtitle {i+1}: {e}, keeping original")
+                # Keep original text on translation failure
         
         # Save translated SRT
         output_path = output_dir / f"subtitles_{target_language}.srt"

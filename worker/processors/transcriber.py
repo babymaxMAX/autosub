@@ -1,4 +1,5 @@
 """Audio transcription using Faster-Whisper."""
+import os
 import logging
 from pathlib import Path
 from faster_whisper import WhisperModel
@@ -11,15 +12,37 @@ _whisper_model = None
 
 
 def get_whisper_model():
-    """Get or initialize Whisper model."""
+    """Get or initialize Whisper model with caching."""
     global _whisper_model
     if _whisper_model is None:
-        logger.info(f"Loading Whisper model: {settings.WHISPER_MODEL}")
+        # Determine cache directory
+        cache_dir = None
+        if settings.WHISPER_CACHE_DIR:
+            cache_dir = Path(settings.WHISPER_CACHE_DIR)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        elif settings.STORAGE_PATH:
+            # Use storage/.models/whisper as default cache
+            cache_dir = Path(settings.STORAGE_PATH) / ".models" / "whisper"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Loading Whisper model: {settings.WHISPER_MODEL} (cache: {cache_dir})")
+        
+        model_kwargs = {
+            "device": settings.WHISPER_DEVICE,
+            "compute_type": "int8" if settings.WHISPER_DEVICE == "cpu" else "float16"
+        }
+        
+        # Set cache directory if available
+        if cache_dir:
+            # Faster-Whisper uses HF_HOME or local cache
+            os.environ["HF_HOME"] = str(cache_dir)
+            model_kwargs["download_root"] = str(cache_dir)
+        
         _whisper_model = WhisperModel(
             settings.WHISPER_MODEL,
-            device=settings.WHISPER_DEVICE,
-            compute_type="int8" if settings.WHISPER_DEVICE == "cpu" else "float16"
+            **model_kwargs
         )
+        logger.info("Whisper model loaded successfully")
     return _whisper_model
 
 

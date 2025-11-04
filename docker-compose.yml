@@ -96,6 +96,23 @@ services:
       - autosub_network
     restart: unless-stopped
 
+  cleanup:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: autosub_cleanup
+    env_file:
+      - .env
+    environment:
+      STORAGE_PATH: /app/storage
+    volumes:
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+    command: python scripts/scheduler_cleanup.py
+    networks:
+      - autosub_network
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:

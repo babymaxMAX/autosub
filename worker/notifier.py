@@ -41,39 +41,57 @@ async def _send_notification(telegram_id: int, task):
     try:
         if task.status == TaskStatus.COMPLETED:
             # Send success message
-            await bot.send_message(
-                telegram_id,
-                f"✅ Задача #{task.id} завершена!\n\n"
-                f"Отправляем вам результат..."
-            )
+            try:
+                await bot.send_message(
+                    telegram_id,
+                    f"✅ Задача #{task.id} завершена!\n\n"
+                    f"Отправляем вам результат..."
+                )
+            except Exception as e:
+                logger.error(f"Error sending completion message: {e}", exc_info=True)
             
             # Send video
             if task.output_file_path and Path(task.output_file_path).exists():
-                video_file = FSInputFile(task.output_file_path)
-                await bot.send_video(
-                    telegram_id,
-                    video_file,
-                    caption=f"🎬 Обработанное видео #task{task.id}"
-                )
+                try:
+                    video_file = FSInputFile(task.output_file_path)
+                    await bot.send_video(
+                        telegram_id,
+                        video_file,
+                        caption=f"🎬 Обработанное видео #task{task.id}"
+                    )
+                except Exception as e:
+                    logger.error(f"Error sending video: {e}", exc_info=True)
             
             # Send subtitles
             if task.subtitles_file_path and Path(task.subtitles_file_path).exists():
-                srt_file = FSInputFile(task.subtitles_file_path)
-                await bot.send_document(
-                    telegram_id,
-                    srt_file,
-                    caption="📝 Файл субтитров (SRT)"
-                )
+                try:
+                    srt_file = FSInputFile(task.subtitles_file_path)
+                    await bot.send_document(
+                        telegram_id,
+                        srt_file,
+                        caption="📝 Файл субтитров (SRT)"
+                    )
+                except Exception as e:
+                    logger.error(f"Error sending subtitles: {e}", exc_info=True)
         
         elif task.status == TaskStatus.FAILED:
             # Send error message
-            await bot.send_message(
-                telegram_id,
-                f"❌ Задача #{task.id} завершилась с ошибкой\n\n"
-                f"Причина: {task.error_message or 'Неизвестная ошибка'}\n\n"
-                f"Попробуйте еще раз или обратитесь в поддержку."
-            )
+            try:
+                await bot.send_message(
+                    telegram_id,
+                    f"❌ Задача #{task.id} завершилась с ошибкой\n\n"
+                    f"Причина: {task.error_message or 'Неизвестная ошибка'}\n\n"
+                    f"Попробуйте еще раз или обратитесь в поддержку."
+                )
+            except Exception as e:
+                logger.error(f"Error sending error message: {e}", exc_info=True)
     
+    except Exception as e:
+        logger.error(f"Unexpected error in _send_notification: {e}", exc_info=True)
     finally:
-        await bot.session.close()
+        # Properly close bot session to avoid conflicts
+        try:
+            await bot.session.close()
+        except Exception as e:
+            logger.warning(f"Error closing bot session: {e}")
 

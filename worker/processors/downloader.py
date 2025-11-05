@@ -179,8 +179,57 @@ def download_from_instagram_instaloader(url: str, work_dir: Path) -> str:
             compress_json=False,
         )
         
+        # Load cookies into instaloader's session if configured
+        if settings.INSTAGRAM_COOKIES_FILE and os.path.exists(settings.INSTAGRAM_COOKIES_FILE):
+            try:
+                logger.info(f"Loading cookies into instaloader session from {settings.INSTAGRAM_COOKIES_FILE}")
+                from http.cookiejar import MozillaCookieJar
+                cookie_jar = MozillaCookieJar()
+                cookie_jar.load(settings.INSTAGRAM_COOKIES_FILE, ignore_discard=True, ignore_expires=True)
+                # Update instaloader's session cookies
+                for cookie in cookie_jar:
+                    loader.context.session.cookies.set_cookie(cookie)
+                logger.info("Cookies loaded successfully into instaloader session")
+            except Exception as cookie_error:
+                logger.warning(f"Failed to load cookies into instaloader: {cookie_error}. Trying without cookies...")
+        
+        # Configure proxy for instaloader's session if available
+        if settings.INSTAGRAM_PROXY:
+            logger.info(f"Using proxy for instaloader session: {settings.INSTAGRAM_PROXY}")
+            loader.context.session.proxies = {
+                'http': settings.INSTAGRAM_PROXY,
+                'https': settings.INSTAGRAM_PROXY,
+            }
+        
         # Set download directory
         output_path = work_dir / "input.mp4"
+        
+        # Prepare requests session for downloading video (with proxy and cookies)
+        import requests
+        from http.cookiejar import MozillaCookieJar
+        
+        session = requests.Session()
+        
+        # Load cookies if configured (Netscape format) for video download
+        if settings.INSTAGRAM_COOKIES_FILE and os.path.exists(settings.INSTAGRAM_COOKIES_FILE):
+            try:
+                cookie_jar = MozillaCookieJar()
+                cookie_jar.load(settings.INSTAGRAM_COOKIES_FILE, ignore_discard=True, ignore_expires=True)
+                session.cookies = cookie_jar
+            except Exception:
+                pass  # Already logged above
+        
+        # Configure proxy if available for video download
+        proxies = None
+        if settings.INSTAGRAM_PROXY:
+            proxies = {
+                'http': settings.INSTAGRAM_PROXY,
+                'https': settings.INSTAGRAM_PROXY,
+            }
+            session.proxies = proxies
+        
+        # Set headers
+        session.headers.update(_get_instagram_headers())
         
         # Download post
         try:
@@ -192,31 +241,55 @@ def download_from_instagram_instaloader(url: str, work_dir: Path) -> str:
                 if not video_url:
                     raise Exception("Video URL not found in post")
                 
-                # Download video file directly
-                import requests
-                response = requests.get(video_url, stream=True, timeout=settings.INSTAGRAM_TIMEOUT)
-                response.raise_for_status()
+                # Download video file directly with retries
+                max_retries = settings.INSTAGRAM_RETRIES
+                last_error = None
                 
-                with open(output_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
+                for attempt in range(max_retries):
+                    try:
+                        logger.info(f"Downloading video (attempt {attempt + 1}/{max_retries})...")
+                        response = session.get(
+                            video_url,
+                            stream=True,
+                            timeout=settings.INSTAGRAM_TIMEOUT,
+                            proxies=proxies
+                        )
+                        response.raise_for_status()
+                        
+                        with open(output_path, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                        
+                        if not output_path.exists() or output_path.stat().st_size == 0:
+                            raise Exception("Downloaded video file is empty")
+                        
+                        logger.info(f"Downloaded via instaloader: {output_path} ({output_path.stat().st_size} bytes)")
+                        return str(output_path)
+                    except Exception as download_error:
+                        last_error = download_error
+                        logger.warning(f"Download attempt {attempt + 1} failed: {download_error}")
+                        if attempt < max_retries - 1:
+                            import time
+                            time.sleep(2)  # Wait before retry
                 
-                if not output_path.exists() or output_path.stat().st_size == 0:
-                    raise Exception("Downloaded video file is empty")
-                
-                logger.info(f"Downloaded via instaloader: {output_path} ({output_path.stat().st_size} bytes)")
-                return str(output_path)
+                # All retries failed
+                raise Exception(f"Failed to download video after {max_retries} attempts: {str(last_error)}")
             else:
                 raise Exception("Post is not a video")
                 
         except instaloader.exceptions.LoginRequiredException:
-            raise Exception("Instagram login required. Please configure INSTAGRAM_COOKIES_FILE or use proxy.")
+            raise Exception(
+                "Instagram login required. Please configure INSTAGRAM_COOKIES_FILE or use proxy. "
+                "This video may be age-restricted or private."
+            )
         except instaloader.exceptions.PrivateProfileNotFollowedException:
             raise Exception("Instagram profile is private and not followed.")
         except Exception as e:
             logger.error(f"instaloader error: {e}", exc_info=True)
             raise Exception(f"Failed to download via instaloader: {str(e)}")
+        finally:
+            session.close()
             
     except Exception as e:
         logger.error(f"Error downloading from Instagram via instaloader: {e}", exc_info=True)
@@ -240,15 +313,61 @@ def download_from_url(url: str, work_dir: Path, source: str = None) -> str:
                 info = ydl.extract_info(url, download=False)
             except (YTDLPError, Exception) as e:
                 error_msg = str(e).lower()
-                if 'timeout' in error_msg or 'timed out' in error_msg:
-                    raise Exception(f"Timeout while accessing {source or 'platform'}. Please try again later.")
-                elif 'blocked' in error_msg or 'unable to download' in error_msg:
+                logger.debug(f"Caught error during extract_info: {error_msg}")
+                
+                # Check for age-restricted or inappropriate content
+                if any(kw in error_msg for kw in ['inappropriate', 'certain audiences', 'age', 'unavailable for certain', 'unavailable for']):
+                    # Age-restricted or inappropriate content
                     if source == "instagram":
-                        raise Exception(f"Instagram video is not accessible. It may be private or require authentication. Please check the URL or try using a proxy.")
+                        # Try fallback on instaloader
+                        if INSTALOADER_AVAILABLE:
+                            logger.info("Instagram video restricted, trying instaloader fallback...")
+                            try:
+                                return download_from_instagram_instaloader(url, work_dir)
+                            except Exception as insta_error:
+                                logger.error(f"instaloader fallback failed: {insta_error}", exc_info=True)
+                                raise Exception(
+                                    "Instagram ограничил доступ к этому видео (возрастные ограничения). "
+                                    "Проверьте ссылку, используйте файл cookies или другой прокси."
+                                )
+                        else:
+                            raise Exception(
+                                "Instagram ограничил доступ к этому видео (возрастные ограничения). "
+                                "Проверьте ссылку или используйте файл cookies."
+                            )
+                    else:
+                        raise Exception(
+                            "Видео недоступно для анонимного просмотра (возрастные или региональные ограничения). "
+                            "Пожалуйста, отправьте другую ссылку."
+                        )
+                elif 'timeout' in error_msg or 'timed out' in error_msg:
+                    raise Exception(f"Timeout while accessing {source or 'platform'}. Please try again later.")
+                elif 'blocked' in error_msg or 'unable to download' in error_msg or 'unable to extract' in error_msg:
+                    if source == "instagram":
+                        # Try fallback on instaloader
+                        if INSTALOADER_AVAILABLE:
+                            logger.info("Instagram video blocked/unable, trying instaloader fallback...")
+                            try:
+                                return download_from_instagram_instaloader(url, work_dir)
+                            except Exception as insta_error:
+                                logger.error(f"instaloader fallback failed: {insta_error}", exc_info=True)
+                                raise Exception(f"Instagram video is not accessible. It may be private or require authentication. Please check the URL or try using a proxy.")
+                        else:
+                            raise Exception(f"Instagram video is not accessible. It may be private or require authentication. Please check the URL or try using a proxy.")
                     else:
                         raise Exception(f"Video is not accessible. Please check the URL.")
                 else:
-                    raise Exception(f"Failed to access video: {str(e)}")
+                    # For any other Instagram errors, try fallback
+                    if source == "instagram" and INSTALOADER_AVAILABLE:
+                        logger.info(f"Instagram error detected ({error_msg[:100]}), trying instaloader fallback...")
+                        try:
+                            return download_from_instagram_instaloader(url, work_dir)
+                        except Exception as insta_error:
+                            logger.error(f"instaloader fallback failed: {insta_error}", exc_info=True)
+                            # Re-raise original error
+                            raise Exception(f"Failed to access video: {str(e)}")
+                    else:
+                        raise Exception(f"Failed to access video: {str(e)}")
             
             # Log video info
             logger.info(f"Video info - Title: {info.get('title', 'Unknown')}, "
@@ -311,6 +430,23 @@ def download_from_url(url: str, work_dir: Path, source: str = None) -> str:
             # Re-raise with user-friendly message
             if 'timeout' in error_msg or 'timed out' in error_msg:
                 raise Exception(f"Download timeout. {source or 'Platform'} may be slow or unavailable. Please try again later.")
+            elif any(kw in error_msg for kw in ['inappropriate', 'certain audiences', 'age']):
+                # Age-restricted content
+                if source == "instagram" and INSTALOADER_AVAILABLE:
+                    logger.info("Instagram video restricted, trying instaloader fallback...")
+                    try:
+                        return download_from_instagram_instaloader(url, work_dir)
+                    except Exception as insta_error:
+                        logger.error(f"instaloader fallback also failed: {insta_error}", exc_info=True)
+                        raise Exception(
+                            "Instagram ограничил доступ к этому видео (возрастные ограничения). "
+                            "Проверьте ссылку, используйте файл cookies или другой прокси."
+                        )
+                else:
+                    raise Exception(
+                        "Видео недоступно для анонимного просмотра (возрастные или региональные ограничения). "
+                        "Пожалуйста, отправьте другую ссылку."
+                    )
             elif 'instagram' in error_msg and ('blocked' in error_msg or 'unable' in error_msg or 'unable to extract' in error_msg):
                 # Try instaloader fallback for Instagram
                 if source == "instagram" and INSTALOADER_AVAILABLE:
@@ -330,14 +466,21 @@ def download_from_url(url: str, work_dir: Path, source: str = None) -> str:
         # For Instagram, try instaloader fallback if yt-dlp completely failed
         if source == "instagram" and INSTALOADER_AVAILABLE:
             error_msg = str(e).lower()
-            if 'unable to extract' in error_msg or 'unable to download' in error_msg:
+            # Try fallback for any Instagram-related error
+            if any(kw in error_msg for kw in ['unable to extract', 'unable to download', 'inappropriate', 'certain audiences', 'age', 'unavailable for certain', 'unavailable for', 'instagram']):
                 logger.info("Primary download failed, trying instaloader fallback for Instagram...")
                 try:
                     return download_from_instagram_instaloader(url, work_dir)
                 except Exception as insta_error:
                     logger.error(f"instaloader fallback also failed: {insta_error}", exc_info=True)
-                    # Re-raise original error
-                    pass
+                    # Re-raise with context
+                    if 'inappropriate' in error_msg or 'certain audiences' in error_msg:
+                        raise Exception(
+                            "Instagram ограничил доступ к этому видео (возрастные ограничения). "
+                            "Проверьте ссылку, используйте файл cookies или другой прокси."
+                        )
+                    else:
+                        raise Exception(f"Failed to download video: {str(e)}")
         
         # Re-raise with context if it's not already a user-friendly message
         if isinstance(e, Exception) and not str(e).startswith(('Failed', 'Timeout', 'Instagram', 'Video')):

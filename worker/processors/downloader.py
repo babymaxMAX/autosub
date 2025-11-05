@@ -10,6 +10,14 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# Try to import instaloader for Instagram fallback
+try:
+    import instaloader
+    INSTALOADER_AVAILABLE = True
+except ImportError:
+    INSTALOADER_AVAILABLE = False
+    logger.warning("instaloader not available, Instagram fallback disabled")
+
 
 def download_video(task, work_dir: Path) -> str:
     """Download video from URL or Telegram."""
@@ -57,7 +65,7 @@ def download_from_telegram(file_id: str, work_dir: Path) -> str:
 def _get_instagram_headers() -> dict:
     """Get headers for Instagram downloads."""
     return {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:117.0) Gecko/20100101 Firefox/117.0',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
         'Accept-Encoding': 'gzip, deflate',
@@ -69,11 +77,12 @@ def _get_instagram_headers() -> dict:
 def _get_platform_opts(source: str, url: str) -> dict:
     """Get platform-specific yt-dlp options."""
     base_opts = {
-        'quiet': False,
-        'no_warnings': False,
+        'quiet': True,
+        'no_warnings': True,
         'extract_flat': False,
         'writeinfojson': False,
         'writethumbnail': False,
+        'noplaylist': True,
         'socket_timeout': settings.DOWNLOAD_TIMEOUT,
         'retries': settings.DOWNLOAD_RETRIES,
         'fragment_retries': settings.DOWNLOAD_RETRIES,
@@ -130,6 +139,88 @@ def _get_platform_opts(source: str, url: str) -> dict:
         **base_opts,
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
     }
+
+
+def _extract_instagram_shortcode(url: str) -> Optional[str]:
+    """Extract Instagram shortcode from URL."""
+    import re
+    patterns = [
+        r'instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)',
+        r'instagram\.com/p/([A-Za-z0-9_-]+)',
+        r'instagram\.com/reel/([A-Za-z0-9_-]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+def download_from_instagram_instaloader(url: str, work_dir: Path) -> str:
+    """Download Instagram video using instaloader as fallback."""
+    if not INSTALOADER_AVAILABLE:
+        raise Exception("instaloader not available, cannot use fallback")
+    
+    shortcode = _extract_instagram_shortcode(url)
+    if not shortcode:
+        raise Exception("Could not extract Instagram shortcode from URL")
+    
+    try:
+        logger.info(f"Trying instaloader fallback for Instagram shortcode: {shortcode}")
+        
+        # Create instaloader instance
+        loader = instaloader.Instaloader(
+            quiet=True,
+            download_videos=True,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+            compress_json=False,
+        )
+        
+        # Set download directory
+        output_path = work_dir / "input.mp4"
+        
+        # Download post
+        try:
+            post = instaloader.Post.from_shortcode(loader.context, shortcode)
+            
+            if post.is_video:
+                # Download video - instaloader saves as {shortcode}.mp4
+                video_url = post.video_url
+                if not video_url:
+                    raise Exception("Video URL not found in post")
+                
+                # Download video file directly
+                import requests
+                response = requests.get(video_url, stream=True, timeout=settings.INSTAGRAM_TIMEOUT)
+                response.raise_for_status()
+                
+                with open(output_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                if not output_path.exists() or output_path.stat().st_size == 0:
+                    raise Exception("Downloaded video file is empty")
+                
+                logger.info(f"Downloaded via instaloader: {output_path} ({output_path.stat().st_size} bytes)")
+                return str(output_path)
+            else:
+                raise Exception("Post is not a video")
+                
+        except instaloader.exceptions.LoginRequiredException:
+            raise Exception("Instagram login required. Please configure INSTAGRAM_COOKIES_FILE or use proxy.")
+        except instaloader.exceptions.PrivateProfileNotFollowedException:
+            raise Exception("Instagram profile is private and not followed.")
+        except Exception as e:
+            logger.error(f"instaloader error: {e}", exc_info=True)
+            raise Exception(f"Failed to download via instaloader: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"Error downloading from Instagram via instaloader: {e}", exc_info=True)
+        raise
 
 
 def download_from_url(url: str, work_dir: Path, source: str = None) -> str:
@@ -220,13 +311,34 @@ def download_from_url(url: str, work_dir: Path, source: str = None) -> str:
             # Re-raise with user-friendly message
             if 'timeout' in error_msg or 'timed out' in error_msg:
                 raise Exception(f"Download timeout. {source or 'Platform'} may be slow or unavailable. Please try again later.")
-            elif 'instagram' in error_msg and ('blocked' in error_msg or 'unable' in error_msg):
-                raise Exception(f"Instagram video is not accessible. It may be private or require authentication.")
+            elif 'instagram' in error_msg and ('blocked' in error_msg or 'unable' in error_msg or 'unable to extract' in error_msg):
+                # Try instaloader fallback for Instagram
+                if source == "instagram" and INSTALOADER_AVAILABLE:
+                    logger.info("yt-dlp failed for Instagram, trying instaloader fallback...")
+                    try:
+                        return download_from_instagram_instaloader(url, work_dir)
+                    except Exception as insta_error:
+                        logger.error(f"instaloader fallback also failed: {insta_error}", exc_info=True)
+                        raise Exception(f"Instagram video is not accessible. yt-dlp and instaloader both failed. Error: {str(insta_error)}")
+                else:
+                    raise Exception(f"Instagram video is not accessible. It may be private or require authentication.")
             else:
                 raise Exception(f"Failed to download video: {str(e)}")
     
     except Exception as e:
         logger.error(f"Error downloading from URL ({url}): {e}", exc_info=True)
+        # For Instagram, try instaloader fallback if yt-dlp completely failed
+        if source == "instagram" and INSTALOADER_AVAILABLE:
+            error_msg = str(e).lower()
+            if 'unable to extract' in error_msg or 'unable to download' in error_msg:
+                logger.info("Primary download failed, trying instaloader fallback for Instagram...")
+                try:
+                    return download_from_instagram_instaloader(url, work_dir)
+                except Exception as insta_error:
+                    logger.error(f"instaloader fallback also failed: {insta_error}", exc_info=True)
+                    # Re-raise original error
+                    pass
+        
         # Re-raise with context if it's not already a user-friendly message
         if isinstance(e, Exception) and not str(e).startswith(('Failed', 'Timeout', 'Instagram', 'Video')):
             raise Exception(f"Failed to download video: {str(e)}")

@@ -113,12 +113,22 @@ def process_video_task(task_id: int):
         
     except Exception as e:
         logger.error(f"Task #{task_id}: Error - {str(e)}", exc_info=True)
+        error_message = str(e)
+        
+        # Update task status to failed
         update_task_status_sync(
             db,
             task_id,
             TaskStatus.FAILED,
-            error_message=str(e)
+            error_message=error_message
         )
+        
+        # Send error notification to user
+        try:
+            from worker.notifier import send_result_to_user
+            send_result_to_user(task_id)
+        except Exception as notify_error:
+            logger.error(f"Task #{task_id}: Failed to send error notification: {notify_error}", exc_info=True)
     finally:
         db.close()
 

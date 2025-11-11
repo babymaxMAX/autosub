@@ -66,6 +66,8 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./logs:/app/logs
+      # read-only mount for cookies used by Instagram downloads (path should match INSTAGRAM_COOKIES_FILE in .env)
+      - ./cookies:/app/cookies:ro
     depends_on:
       - postgres
       - redis

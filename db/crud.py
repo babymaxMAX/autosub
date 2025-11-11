@@ -37,6 +37,22 @@ async def create_user(
     return user
 
 
+async def update_user_language(
+    db: AsyncSession,
+    user_id: int,
+    language_code: str,
+) -> User:
+    """Update user's interface language."""
+    await db.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(language_code=language_code, updated_at=datetime.utcnow())
+    )
+    await db.commit()
+    result = await db.execute(select(User).where(User.id == user_id))
+    return result.scalar_one()
+
+
 async def update_user_tier(
     db: AsyncSession,
     user_id: int,

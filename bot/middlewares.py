@@ -43,7 +43,7 @@ class UserMiddleware(BaseMiddleware):
                 )
                 logger.info(f"New user created: {user.telegram_id}")
             
-            # Add user to data
+            # Add user to data while session is still active
             data["user"] = user
             data["db"] = db
         

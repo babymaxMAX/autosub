@@ -297,6 +297,9 @@ def process_video_with_subtitles(
     output_dir: Path,
     vertical_format: bool = False,
     add_watermark: bool = False,
+    subtitle_style: str = "sub36o1",
+    subtitle_position: str = "bottom",
+    subtitle_language: Optional[str] = None,
 ) -> str
 ```
 

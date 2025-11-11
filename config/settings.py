@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     WHISPER_DEVICE: str = Field(default="auto", description="Device for processing (cpu/cuda/auto)")
     WHISPER_CACHE_DIR: Optional[str] = Field(default=None, description="Whisper cache directory")
     TTS_CACHE_DIR: Optional[str] = Field(default=None, description="TTS cache directory")
+    TRANSLATION_DEVICE: str = Field(default="auto", description="Device for translation models (cpu/cuda/auto)")
+    TRANSLATION_CACHE_DIR: Optional[str] = Field(default=None, description="Translation model cache directory")
+    HUGGINGFACE_TOKEN: Optional[str] = Field(default=None, description="HuggingFace access token for private/protected models")
     
     # Instagram
     INSTAGRAM_PROXY: Optional[str] = Field(default=None, description="Proxy for Instagram downloads")
@@ -72,6 +75,7 @@ class Settings(BaseSettings):
     
     # Misc
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
+    DISABLE_LIMITS: bool = Field(default=False, description="Disable user/tier limits for testing")
     
     class Config:
         env_file = ".env"

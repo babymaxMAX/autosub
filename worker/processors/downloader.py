@@ -31,35 +31,32 @@ def download_video(task, work_dir: Path) -> str:
 
 
 def download_from_telegram(file_id: str, work_dir: Path) -> str:
-    """Download video from Telegram."""
-    bot = None
+    """Download video from Telegram using a dedicated event loop."""
+    import asyncio
+
+    async def _do_download() -> str:
+        async with Bot(token=settings.BOT_TOKEN) as bot:
+            file = await bot.get_file(file_id)
+            output_path = work_dir / f"input{Path(file.file_path).suffix}"
+            await bot.download_file(file.file_path, output_path)
+            return str(output_path)
+
     try:
-        import asyncio
-        
-        # Create bot with proper session management
-        bot = Bot(token=settings.BOT_TOKEN)
-        
-        # Get file
-        file = asyncio.run(bot.get_file(file_id))
-        
-        # Download file
-        output_path = work_dir / f"input{Path(file.file_path).suffix}"
-        asyncio.run(bot.download_file(file.file_path, output_path))
-        
-        logger.info(f"Downloaded from Telegram: {output_path}")
-        return str(output_path)
-    
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            out_path = loop.run_until_complete(_do_download())
+        finally:
+            try:
+                loop.stop()
+            except Exception:
+                pass
+            loop.close()
+        logger.info(f"Downloaded from Telegram: {out_path}")
+        return out_path
     except Exception as e:
         logger.error(f"Error downloading from Telegram: {e}", exc_info=True)
         raise
-    finally:
-        # Properly close bot session to avoid conflicts
-        if bot is not None:
-            try:
-                import asyncio
-                asyncio.run(bot.session.close())
-            except Exception as e:
-                logger.warning(f"Error closing bot session: {e}")
 
 
 def _get_instagram_headers() -> dict:

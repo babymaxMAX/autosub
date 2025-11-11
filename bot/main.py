@@ -12,6 +12,8 @@ from bot.handlers import (
     pricing_handler,
     video_handler,
     admin_handler,
+    history_handler,
+    preset_handler,
 )
 from bot.middlewares import UserMiddleware, LoggingMiddleware
 
@@ -50,6 +52,8 @@ async def main():
     dp.include_router(pricing_handler.router)
     dp.include_router(video_handler.router)
     dp.include_router(admin_handler.router)
+    dp.include_router(history_handler.router)
+    dp.include_router(preset_handler.router)
     
     # Start polling
     logger.info("Bot started successfully!")
